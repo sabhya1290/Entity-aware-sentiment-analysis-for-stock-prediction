@@ -130,6 +130,7 @@ plt.ylabel("Normalized Value")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
+plt.savefig("sentiment_trend.png", dpi=300)
 plt.show()
 
 # =========================================
