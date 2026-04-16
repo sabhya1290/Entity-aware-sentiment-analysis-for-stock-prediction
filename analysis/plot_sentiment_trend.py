@@ -1,104 +1,127 @@
 import pandas as pd
+import yfinance as yf
 import matplotlib.pyplot as plt
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# =========================
-# PATHS
-# =========================
-INPUT_CSV = "data/processed/test.csv"
-MODEL_PATH = "outputs/best_model"
+# =========================================
+# STEP 1: Load your sentiment data
+# =========================================
+# Change this to your file name
+sentiment_file = "data/processed/dataset_with_dates.csv"
 
-TEXT_COLUMN = "text"
-LABEL_COLUMN = "label"
+sent_df = pd.read_csv(sentiment_file)
 
-# =========================
-# LOAD DATA
-# =========================
-df = pd.read_csv(INPUT_CSV)
+# Make sure Date column is proper datetime
+sent_df["Date"] = pd.to_datetime(sent_df["Date"], errors="coerce")
+sent_df = sent_df.dropna(subset=["Date"])
 
-print("Columns:", df.columns.tolist())
+# If you have multiple news rows per day, aggregate to daily mean sentiment
+sent_daily = (
+    sent_df.groupby("Date", as_index=False)["sentiment_score"]
+    .mean()
+    .sort_values("Date")
+)
 
-df = df[[TEXT_COLUMN, LABEL_COLUMN]].dropna().reset_index(drop=True)
+# 30-day moving average for sentiment
+sent_daily["sentiment_ma30"] = sent_daily["sentiment_score"].rolling(window=30).mean()
 
-# fake dates for trend visualization
-df["date"] = pd.date_range(start="2002-01-01", periods=len(df), freq="D")
+# =========================================
+# STEP 2: Download NIFTY 500 from Yahoo Finance
+# =========================================
+ticker = "^CRSLDX"   # NIFTY 500
+market_df = yf.download(
+    ticker,
+    start="2002-01-01",
+    end="2018-01-01",
+    auto_adjust=False,
+    progress=False
+)
 
-# =========================
-# LOAD MODEL
-# =========================
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Reset index
+market_df = market_df.reset_index()
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+# Keep only needed columns
+market_df = market_df[["Date", "Close"]].copy()
 
-model.to(device)
-model.eval()
+# 30-day moving average for market
+market_df["market_ma30"] = market_df["Close"].rolling(window=30).mean()
 
-# prediction label map
-id_to_label = {
-    0: "negative",
-    1: "neutral",
-    2: "positive"
-}
+# =========================================
+# STEP 3: Merge sentiment and market data by date
+# =========================================
+merged = pd.merge(sent_daily, market_df, on="Date", how="inner")
 
-# =========================
-# PREDICT
-# =========================
-predictions = []
+# Drop rows where moving averages are not available yet
+merged = merged.dropna(subset=["sentiment_ma30", "market_ma30"]).copy()
 
-with torch.no_grad():
-    for text in df[TEXT_COLUMN].astype(str):
-        inputs = tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            padding=True,
-            max_length=128
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+# =========================================
+# STEP 4: Normalize both series to compare on same chart
+# =========================================
+# This makes both lines comparable visually
+merged["sentiment_norm"] = (
+    (merged["sentiment_ma30"] - merged["sentiment_ma30"].min()) /
+    (merged["sentiment_ma30"].max() - merged["sentiment_ma30"].min())
+)
 
-        outputs = model(**inputs)
-        pred_id = torch.argmax(outputs.logits, dim=1).item()
-        predictions.append(id_to_label[pred_id])
+merged["market_norm"] = (
+    (merged["market_ma30"] - merged["market_ma30"].min()) /
+    (merged["market_ma30"].max() - merged["market_ma30"].min())
+)
 
-df["predicted_sentiment"] = predictions
+# =========================================
+# STEP 5: Detect local minima on market curve
+# =========================================
+# These can be used as red/green dots like in the paper-style figure
+merged["prev_market"] = merged["market_norm"].shift(1)
+merged["next_market"] = merged["market_norm"].shift(-1)
 
-# =========================
-# CONVERT ACTUAL LABELS
-# =========================
-# if your label column is already numeric: 0,1,2
-df["actual_sentiment"] = df[LABEL_COLUMN].map(id_to_label)
+market_minima = merged[
+    (merged["market_norm"] < merged["prev_market"]) &
+    (merged["market_norm"] < merged["next_market"])
+].copy()
 
-# numeric mapping for plotting
-score_map = {
-    "negative": -1,
-    "neutral": 0,
-    "positive": 1
-}
+# For a cleaner graph, keep only important minima
+# Adjust threshold if too many points appear
+market_minima = market_minima[market_minima["market_norm"] < 0.45]
 
-df["actual_num"] = df["actual_sentiment"].map(score_map)
-df["predicted_num"] = df["predicted_sentiment"].map(score_map)
+# =========================================
+# STEP 6: Plot
+# =========================================
+plt.figure(figsize=(16, 7))
 
-# =========================
-# DAILY TREND
-# =========================
-daily = df.groupby("date")[["actual_num", "predicted_num"]].mean().reset_index()
+# Sentiment line
+plt.plot(
+    merged["Date"],
+    merged["sentiment_norm"],
+    label="News-based Sentiment Index (30-day MA)",
+    linewidth=1.5
+)
 
-daily["actual_ma30"] = daily["actual_num"].rolling(30, min_periods=1).mean()
-daily["predicted_ma30"] = daily["predicted_num"].rolling(30, min_periods=1).mean()
+# Market line
+plt.plot(
+    merged["Date"],
+    merged["market_norm"],
+    label="NIFTY 500 Index (30-day MA)",
+    linewidth=1.5
+)
 
-# =========================
-# PLOT
-# =========================
-plt.figure(figsize=(14, 7))
-plt.plot(daily["date"], daily["actual_ma30"], label="Actual Sentiment (30-day MA)")
-plt.plot(daily["date"], daily["predicted_ma30"], linestyle="--", label="Predicted Sentiment (30-day MA)")
+# Mark minima
+plt.scatter(
+    market_minima["Date"],
+    market_minima["market_norm"],
+    s=45,
+    label="Market Troughs"
+)
+
+plt.title("Sentiment Index vs NIFTY 500 (30-day Moving Average)")
 plt.xlabel("Date")
-plt.ylabel("Sentiment Score")
-plt.title("Actual vs Predicted Sentiment Trend")
+plt.ylabel("Normalized Value")
 plt.legend()
+plt.grid(True)
 plt.tight_layout()
-plt.savefig("sentiment_trend.png", dpi=300, bbox_inches="tight")
-print("Saved plot as sentiment_trend.png")
 plt.show()
+
+# =========================================
+# STEP 7: Save merged output
+# =========================================
+merged.to_csv("merged_sentiment_market.csv", index=False)
+print("Saved: merged_sentiment_market.csv")
