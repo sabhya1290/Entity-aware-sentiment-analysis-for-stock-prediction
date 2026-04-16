@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 # Load your file
-df = pd.read_csv("test.csv")
+df = pd.read_csv("sentfin_entity_aware.csv")
 
 # Create daily date range like paper period
 date_pool = pd.date_range(start="2002-01-01", end="2017-12-31", freq="D")
@@ -20,6 +20,6 @@ df["Date"] = repeated_dates
 df = df.sort_values("Date").reset_index(drop=True)
 
 # Save
-df.to_csv("dataset_with_dates.csv", index=False)
+df.to_csv("sentfin_entity_aware_date.csv", index=False)
 
 print(df)

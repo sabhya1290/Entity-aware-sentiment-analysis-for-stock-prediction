@@ -3,17 +3,14 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 
 
-sentiment_file = "data/processed/dataset_with_dates.csv"
+sentiment_file = "data/processed/sentfin_entity_aware_date.csv"
 
 sent_df = pd.read_csv(sentiment_file)
 
-# Convert Date column
 sent_df["Date"] = pd.to_datetime(sent_df["Date"], errors="coerce")
 
-# Use existing numeric sentiment column: label
 sent_df = sent_df.dropna(subset=["Date", "label"])
 
-# Make sure label is numeric
 sent_df["label"] = pd.to_numeric(sent_df["label"], errors="coerce")
 sent_df = sent_df.dropna(subset=["label"])
 
